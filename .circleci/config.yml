@@ -1,0 +1,94 @@
+defaults: &defaults
+  working_directory: /app
+  docker:
+    - image: 116419993949.dkr.ecr.eu-west-1.amazonaws.com/circle-ci-builder-alpine:latest
+      aws_auth:
+        aws_access_key_id: $AWS_ACCESS_KEY_ID
+        aws_secret_access_key: $AWS_SECRET_ACCESS_KEY
+
+version: 2
+jobs:
+  build:
+    <<: *defaults
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Build application Docker image and push to ECR
+          command: |
+            /scripts/build-docker-image-and-push-to-ecr cron-container
+      - persist_to_workspace:
+          root: /app
+          paths:
+            - docker-compose.yml
+            - DOCKER_IMAGE
+
+  generate_task_definition:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: /app
+      - run:
+          name: Generate task definition
+          command: |-
+            /scripts/generate-ecs-task-definition-from-docker-compose cron-container docker-compose.yml $(cat DOCKER_IMAGE)
+      - persist_to_workspace:
+          root: .
+          paths:
+            - DOCKER_IMAGE
+            - TASK_DEFINITION
+
+  deploy_to_staging:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: /app
+      - deploy:
+          name: Deploy to STG7
+          command: |-
+            /scripts/deploy-ecs-task-definition cron-container stg7 $(cat TASK_DEFINITION) 1
+      - persist_to_workspace:
+          root: .
+          paths:
+            - DOCKER_IMAGE
+            - TASK_DEFINITION
+
+  deploy_to_production:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: /app
+      - deploy:
+          name: Deploy to PRD7
+          command: |-
+            /scripts/deploy-ecs-task-definition cron-container prd7 $(cat TASK_DEFINITION) 1
+      - persist_to_workspace:
+          root: .
+          paths:
+            - DOCKER_IMAGE
+            - TASK_DEFINITION
+
+workflows:
+  version: 2
+  build-staging-production-workflow:
+    jobs:
+      - build:
+          context: org-global
+      - generate_task_definition:
+          context: org-global
+          requires:
+           - build
+      - deploy_to_staging:
+          context: org-global
+          requires:
+            - generate_task_definition
+      - hold:
+         type: approval
+         requires:
+           - deploy_to_staging
+      - deploy_to_production:
+          context: org-global
+          requires:
+            - deploy_to_staging
+            - hold

@@ -1,0 +1,10 @@
+version: '2'
+services:
+  cron-container:
+    container_name: cron-container
+    image: ${DOCKER_IMAGE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+
+
